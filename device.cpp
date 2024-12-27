@@ -4,6 +4,9 @@
 #include <PubSubClient.h>
 #include "GyverEncoder.h"
 
+#include "index_html.h"
+#include "saved_html.h"
+
 // Пины
 #define LED_PIN 2  // Встроенный светодиод(синий)
 
@@ -44,6 +47,7 @@ Encoder encoder(CLK, DT, SW);
 // Сохранённые данные Wi-Fi
 String savedSSID;
 String savedPassword;
+String savedMqttServer;
 
 // Callback-функция для обработки входящих сообщений
 void callback(char* topic, byte* message, unsigned int length) {
@@ -86,98 +90,7 @@ void connectToWiFi(const char* ssid, const char* password) {
 
 // Обработчик для страницы ввода Wi-Fi и MQTT
 void handleRoot() {
-  server.send(200, "text/html", R"rawliteral(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WiFi & MQTT Setup</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      background-color: #f3f4f6;
-      color: #333;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-    .container {
-      background: #fff;
-      border-radius: 10px;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-      padding: 20px;
-      max-width: 400px;
-      width: 100%;
-    }
-    h1 {
-      font-size: 1.5rem;
-      margin-bottom: 1rem;
-      text-align: center;
-      color: #1e90ff;
-    }
-    label {
-      font-weight: bold;
-      display: block;
-      margin: 10px 0 5px;
-    }
-    input[type="text"],
-    input[type="password"] {
-      width: 100%;
-      padding: 10px;
-      margin-bottom: 15px;
-      border: 1px solid #ccc;
-      border-radius: 5px;
-      box-sizing: border-box;
-    }
-    input[type="submit"] {
-      background: #1e90ff;
-      color: #fff;
-      padding: 10px 15px;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
-      width: 100%;
-      font-size: 1rem;
-    }
-    input[type="submit"]:hover {
-      background: #0077cc;
-    }
-    @media (max-width: 480px) {
-      .container {
-        padding: 15px;
-      }
-      h1 {
-        font-size: 1.2rem;
-      }
-      input[type="submit"] {
-        font-size: 0.9rem;
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>WiFi & MQTT Setup</h1>
-    <form action="/save" method="POST">
-      <label for="ssid">SSID:</label>
-      <input type="text" id="ssid" name="ssid" required>
-
-      <label for="password">Password:</label>
-      <input type="password" id="password" name="password" required>
-
-      <label for="mqtt_server">MQTT Server:</label>
-      <input type="text" id="mqtt_server" name="mqtt_server">
-
-      <input type="submit" value="Save">
-    </form>
-  </div>
-</body>
-</html>
-  )rawliteral");
+  server.send(200, "text/html",  index_html);
 }
 
 // Обработчик для сохранения настроек
@@ -190,67 +103,7 @@ void handleSave() {
   preferences.putString("password", password);
   preferences.putString("mqtt_server", mqttServer);
 
-  server.send(200, "text/html", R"rawliteral(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Settings Saved</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      background-color: #f3f4f6;
-      color: #333;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-    .message-box {
-      background: #fff;
-      border-radius: 10px;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-      padding: 20px;
-      text-align: center;
-      max-width: 400px;
-      width: 100%;
-    }
-    h1 {
-      font-size: 1.5rem;
-      margin-bottom: 1rem;
-      color: #1e90ff;
-    }
-    p {
-      font-size: 1rem;
-      margin-bottom: 1rem;
-    }
-    .loader {
-      border: 5px solid #f3f3f3;
-      border-top: 5px solid #1e90ff;
-      border-radius: 50%;
-      width: 50px;
-      height: 50px;
-      animation: spin 1s linear infinite;
-      margin: 0 auto;
-    }
-    @keyframes spin {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
-    }
-  </style>
-</head>
-<body>
-  <div class="message-box">
-    <h1>Settings Saved</h1>
-    <p>The device is rebooting. Please wait...</p>
-    <div class="loader"></div>
-  </div>
-</body>
-</html>
-  )rawliteral");
+  server.send(200, "text/html", saved_html);
 
   delay(1000);
   ESP.restart();
