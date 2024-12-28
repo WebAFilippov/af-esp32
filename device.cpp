@@ -14,202 +14,280 @@
 #define DT 23   // Encoder right
 #define SW 21   // Кнопка Енкодер
 
-#define MANUAL 0		// нужно вызывать функцию tick() вручную
-#define AUTO 1			// tick() входит во все остальные функции и опрашивается сама!
+#define MANUAL 0
+#define AUTO 1
 
-
-// Состояния кнопки
+// Состояния
 bool buttonPressed = false;
+bool serverMode = false;
 
-// Объекты для работы с веб-сервером и памятью
+// Объекты
 WebServer server(80);
 Preferences preferences;
-
-// Таймеры для кнопки
-unsigned long buttonPressStart = 0;
-const unsigned long longPressDuration = 5000;  // 5 секунд
-
-// Таймеры для переподключения
-unsigned long lastReconnectAttempt = 0;
-const unsigned long reconnectInterval = 10000;  // 10 секунд
-
-// Настройки MQTT
-const int mqtt_port = 1883;                  // Порт, который ты задал в .env (по умолчанию 1883)
-const char* mqtt_client_id = "mqtt-client";  // ID клиента MQTT
-
-// Топик с маской
-const char* mqtt_topic_sub_mask = "response/#";
-
 WiFiClient espClient;
 PubSubClient client(espClient);
 Encoder encoder(CLK, DT, SW);
+
+// Таймеры
+unsigned long buttonPressStart = 0;
+const unsigned long longPressDuration = 5000;  // 5 секунд
+
+// MQTT
+const int mqtt_port = 1883;
+const char* mqtt_client_id = "mqtt-client";
+const char* mqtt_topic_sub_mask = "response/#";
 
 // Сохранённые данные Wi-Fi
 String savedSSID;
 String savedPassword;
 String savedMqttServer;
 
-// Callback-функция для обработки входящих сообщений
-void callback(char* topic, byte* message, unsigned int length) {
-  Serial.print("Сообщение получено на топике: ");
-  Serial.print(topic);
-  Serial.print(". Сообщение: ");
-  String messageTemp;
+void sendMqttCommand(const char* topic, const char* message) {
+  if (client.connected()) {
+    client.publish(topic, message);
+  }
+}
 
+
+void callback(char* topic, byte* message, unsigned int length) {
+  String messageTemp;
   for (int i = 0; i < length; i++) {
     messageTemp += (char)message[i];
   }
+  Serial.print("Received MQTT message on topic: ");
+  Serial.println(topic);
+  Serial.print("Message: ");
   Serial.println(messageTemp);
 }
 
-// Функция для мигания светодиодом
-void blinkLED(int times, int delayMs) {
-  for (int i = 0; i < times; i++) {
-    digitalWrite(LED_PIN, HIGH);
-    delay(delayMs);
-    digitalWrite(LED_PIN, LOW);
-    delay(delayMs);
-  }
-}
-
-// Функция для подключения к Wi-Fi
-void connectToWiFi(const char* ssid, const char* password) {
-  WiFi.begin(ssid, password);
-
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.print(".");
-  }
-
-  Serial.println("\nWiFi connected");
-  IPAddress localIP = WiFi.localIP();
-  Serial.print("Local IP: ");
-  Serial.println(localIP);
-}
-
-// Обработчик для страницы ввода Wi-Fi и MQTT
 void handleRoot() {
-  server.send(200, "text/html",  index_html);
+  server.send(200, "text/html", index_html);
 }
 
-// Обработчик для сохранения настроек
 void handleSave() {
   String ssid = server.arg("ssid");
   String password = server.arg("password");
   String mqttServer = server.arg("mqtt_server");
 
-  preferences.putString("ssid", ssid);
-  preferences.putString("password", password);
-  preferences.putString("mqtt_server", mqttServer);
+  Serial.println("Saving Wi-Fi and MQTT settings:");
+  Serial.print("SSID: ");
+  Serial.println(ssid);
+  Serial.print("Password: ");
+  Serial.println(password);
+  Serial.print("MQTT Server: ");
+  Serial.println(mqttServer);
+
+  if (preferences.getString("ssid") != ssid) preferences.putString("ssid", ssid);
+  if (preferences.getString("password") != password) preferences.putString("password", password);
+  if (preferences.getString("mqtt_server") != mqttServer) preferences.putString("mqtt_server", mqttServer);
 
   server.send(200, "text/html", saved_html);
-
   delay(1000);
   ESP.restart();
 }
 
-// Обработчик сброса настроек Wi-Fi
-void resetWiFiSettings() {
-  preferences.clear();
-  Serial.println("WiFi settings cleared");
-  blinkLED(5, 300);
-  ESP.restart();
-}
+bool isLongPress() {
+  static bool buttonPressed = false;
+  static unsigned long pressStart = 0;
 
-// Обработка нажатия кнопки
-void handleButtonPress() {
   if (digitalRead(SW) == LOW) {
     if (!buttonPressed) {
       buttonPressed = true;
-      buttonPressStart = millis();
-    } else if (millis() - buttonPressStart >= longPressDuration) {
-      resetWiFiSettings();
+      pressStart = millis();
+    } else if (millis() - pressStart >= longPressDuration) {
+      return true;  // Длинное нажатие
     }
   } else {
     buttonPressed = false;
   }
+  return false;
 }
 
-// Проверка состояния Wi-Fi и переподключение
-void reconnectWiFi() {
-  if (WiFi.getMode() != WIFI_STA || WiFi.status() == WL_CONNECTED) {
-    // Устройство не в режиме станции — переподключение не требуется
-    return;
+void handleButtonPress() {
+  if (isLongPress()) {
+    resetWiFiSettings();
+  }
+}
+
+void connectToWiFi(const char* ssid, const char* password) {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+
+  WiFi.begin(ssid, password);
+  unsigned long startAttemptTime = millis();
+
+  while (WiFi.status() != WL_CONNECTED) {
+    // Проверка на превышение времени ожидания (10 секунд)
+    if (millis() - startAttemptTime > 10000) {
+      Serial.println("WiFi connection failed!");
+      updateLED();
+      return;
+    }
+
+    // Проверка долгого нажатия кнопки
+    handleButtonPress();
+    delay(100);  // Короткая задержка для экономии ресурсов
   }
 
-  if (millis() - lastReconnectAttempt >= reconnectInterval) {
-    lastReconnectAttempt = millis();
-    Serial.println("WiFi disconnected. Attempting to reconnect...");
+  Serial.println("WiFi connected!");
+}
+
+void reconnectWiFi() {
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Reconnecting to WiFi...");
     WiFi.begin(savedSSID.c_str(), savedPassword.c_str());
+
+    unsigned long currentTime = millis();
+    if (currentTime - startAttemptTime > 10000) {  // 10 секунд таймаут
+      Serial.println("WiFi connection failed!");
+      updateLED();
+      return;
+    }
+
+    handleButtonPress();
+    delay(500);
   }
+
+  Serial.println("WiFi reconnected successfully.");
+  updateLED();
+}
+
+void reconnectMQTT() {
+  unsigned long startAttemptTime = millis();
+  while (!client.connected()) {
+    Serial.print("Connecting to MQTT... ");
+    if (client.connect(mqtt_client_id)) {
+      Serial.println("connected!");
+      client.subscribe(mqtt_topic_sub_mask);
+      updateLED();
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again later...");
+
+      unsigned long currentTime = millis();
+      if (currentTime - startAttemptTime > 10000) {
+        Serial.println("MQTT connection failed!");
+        updateLED();
+        return;
+      }
+
+      handleButtonPress();
+      delay(500);
+    }
+  }
+}
+
+void resetWiFiSettings() {
+  Serial.println("Resetting Wi-Fi settings...");
+  preferences.clear();
+  ESP.restart();
 }
 
 void setup() {
   Serial.begin(115200);
-
   pinMode(SW, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
 
-  encoder.setType(TYPE2);  // Encoder ON
-  encoder.setTickMode(AUTO); // MANUAL / AUTO - ручной или автоматический опрос энкодера функцией tick().
+  encoder.setType(TYPE2);
+  encoder.setTickMode(AUTO);
 
-  // Открываем доступ к NVS
   preferences.begin("wifi-config", false);
 
-  // Получение сохранённых данных
   savedSSID = preferences.getString("ssid", "");
   savedPassword = preferences.getString("password", "");
   savedMqttServer = preferences.getString("mqtt_server", "");
 
   if (savedSSID != "" && savedPassword != "") {
     connectToWiFi(savedSSID.c_str(), savedPassword.c_str());
-    if (savedMqttServer != "") {
+    if (savedMqttServer != "") { 
       client.setServer(savedMqttServer.c_str(), mqtt_port);
       client.setCallback(callback);
-      Serial.print("Saved MQTT Server: ");
-      Serial.println(savedMqttServer);
+      Serial.println("MQTT server setup complete.");
+    } else {
+      Serial.println("MQTT server not configured.");
     }
   } else {
-    Serial.println("No saved WiFi credentials. Starting Access Point...");
+    serverMode = true;
+    IPAddress local_IP(192, 168, 4, 100);
+    IPAddress gateway(192, 168, 4, 100);
+    IPAddress subnet(255, 255, 255, 0);
 
-    // Настройка нового IP-адреса для точки доступа
-    IPAddress local_IP(192, 168, 4, 100);  // Стандартный диапазон ESP32
-    IPAddress gateway(192, 168, 4, 100);   // Шлюз совпадает с IP
-    IPAddress subnet(255, 255, 255, 0);    // Маска подсети
-
-    if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
-      Serial.println("Failed to configure Access Point IP");
-    }
-
+    WiFi.softAPConfig(local_IP, gateway, subnet);
     WiFi.softAP("SMART_TABLE");
-
-    IPAddress IP = WiFi.softAPIP();
-    Serial.print("Access Point IP: ");
-    Serial.println(IP);
-
-    // Настраиваем сервер
     server.on("/", handleRoot);
     server.on("/save", handleSave);
     server.begin();
+
+    Serial.println("Access Point mode enabled.");
+    updateLED();
+  }
+}
+
+
+void updateLED() {
+  static unsigned long lastBlinkTime = 0;
+  static int blinkCount = 0;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastBlinkTime >= 500) {
+      lastBlinkTime = millis();
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+      blinkCount++;
+    }
+    if (blinkCount >= 2) {
+      blinkCount = 0;
+    }
+  } else if (!client.connected()) {
+    if (millis() - lastBlinkTime >= 200) {
+      lastBlinkTime = millis();
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+      blinkCount++;
+    }
+    if (blinkCount >= 4) {
+      blinkCount = 0;
+    }
+  } else {
+    digitalWrite(LED_PIN, HIGH);
+  }
+}
+
+void checkConnections() {
+  if (WiFi.status() != WL_CONNECTED) {
+    reconnectWiFi();
+  }
+  if (!client.connected()) {
+    client.unsubscribe(mqtt_topic_sub_mask);
+    reconnectMQTT();
   }
 }
 
 void loop() {
-  server.handleClient();
-  handleButtonPress();
-  reconnectWiFi();
-
-  // Управление светодиодом в зависимости от состояния Wi-Fi
-  if (WiFi.status() == WL_CONNECTED) {
-    digitalWrite(LED_PIN, HIGH);  // Включить светодиод
-  } else {
-    digitalWrite(LED_PIN, LOW);  // Выключить светодиод
+  if (serverMode) {
+    server.handleClient();
+    updateLED();
+    handleButtonPress();
+    return;
   }
 
-  client.loop();  // Обрабатываем входящие сообщения и отправляем пинг-сообщения  
-
-  if (encoder.isRight() && client.connected()) client.publish("increment/volume", "+");    	
-  if (encoder.isLeft() && client.connected()) client.publish("decrement/volume", "-");
-  if (encoder.isSingle() && client.connected()) client.publish("toggle/volume", "toggle");
+  checkConnections();
+  updateLED();
+  client.loop();
+  encoder.tick();
+  if (encoder.isRight()) {
+    sendMqttCommand("increment/volume", "+");
+  }
+  if (encoder.isLeft()) {
+    sendMqttCommand("decrement/volume", "-");
+  }
+  if (encoder.isSingle()) {
+    sendMqttCommand("toggle/volume", "toggle");
+  }
+  handleButtonPress();
 }
+
+
+// TP-Link_9F9A
+// 11745709
+// 192.168.0.199
