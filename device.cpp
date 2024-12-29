@@ -29,7 +29,7 @@ Encoder encoder(CLK, DT, SW);
 // MQTT
 const int mqtt_port = 1883;
 const char* mqtt_client_id = "mqtt-client";
-const char* mqtt_topic_sub_mask = "response/#";
+const char* mqtt_topic_sub_mask = "#";
 
 // Сохранённые данные Wi-Fi
 String savedSSID;
@@ -81,19 +81,24 @@ void handleSave() {
 
 // Задачи FreeRTOS
 void TaskWiFiReconnect(void* pvParameters) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = 5000 / portTICK_PERIOD_MS;  // Проверка раз в 5 секунд
+
   while (1) {
     if (WiFi.status() != WL_CONNECTED && !serverMode) {
       Serial.println("Reconnecting WiFi...");
-      WiFi.begin(savedSSID.c_str(), savedPassword.c_str());
-      delay(5000);
+      WiFi.reconnect();  // Используем reconnect вместо begin для ускорения
     }
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
 
 void TaskMQTTReconnect(void* pvParameters) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = 500 / portTICK_PERIOD_MS;
+
   while (1) {
-    if (!client.connected() && !serverMode) {
+    if (!client.connected()) {
       Serial.print("Connecting to MQTT... ");
       if (client.connect(mqtt_client_id)) {
         Serial.println("connected!");
@@ -104,23 +109,33 @@ void TaskMQTTReconnect(void* pvParameters) {
         Serial.println(" try again later...");
       }
     }
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
+
+    client.loop();  // Обязательный вызов для поддержки MQTT
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
 
 void TaskEncoder(void* pvParameters) {
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+  const TickType_t xFrequency = 1 / portTICK_PERIOD_MS;  // Проверка каждые 1 мс
+
   while (1) {
     encoder.tick();
+
     if (encoder.isRight()) {
+      Serial.println("send +");
       sendMqttCommand("increment/volume", "+");
     }
     if (encoder.isLeft()) {
+      Serial.println("send -");
       sendMqttCommand("decrement/volume", "-");
     }
     if (encoder.isSingle()) {
+      Serial.println("send toggle");
       sendMqttCommand("toggle/volume", "toggle");
     }
-    vTaskDelay(10 / portTICK_PERIOD_MS);
+
+    vTaskDelayUntil(&xLastWakeTime, xFrequency);  // Жёсткая привязка к интервалу
   }
 }
 
@@ -133,14 +148,20 @@ void TaskWebServer(void* pvParameters) {
 
 void TaskLED(void* pvParameters) {
   while (1) {
-    if (WiFi.status() != WL_CONNECTED) {
-      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+    if (serverMode) {  // Режим сервера
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Мигание 1 раз в 3 секунды
+      vTaskDelay(3000 / portTICK_PERIOD_MS);
+    } 
+    else if (WiFi.status() != WL_CONNECTED) {  // Нет подключения к Wi-Fi
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Мигание 1 раз в секунду
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+    } 
+    else if (!client.connected()) {  // Нет подключения к MQTT
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Мигание 1 раз в 500 мс
       vTaskDelay(500 / portTICK_PERIOD_MS);
-    } else if (!client.connected()) {
-      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-      vTaskDelay(200 / portTICK_PERIOD_MS);
-    } else {
-      digitalWrite(LED_PIN, HIGH);
+    } 
+    else {  // Подключен к MQTT
+      digitalWrite(LED_PIN, HIGH); // Постоянный свет
       vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
   }
@@ -149,7 +170,6 @@ void TaskLED(void* pvParameters) {
 void TaskButton(void* pvParameters) {
   while (1) {
     if (digitalRead(SW) == LOW) {
-      delay(50);
       unsigned long pressStart = millis();
       while (digitalRead(SW) == LOW) {
         if (millis() - pressStart > 5000) {
@@ -165,7 +185,7 @@ void TaskButton(void* pvParameters) {
         vTaskDelay(10 / portTICK_PERIOD_MS);
       }
     }
-    vTaskDelay(100 / portTICK_PERIOD_MS);
+    vTaskDelay(20 / portTICK_PERIOD_MS);  // Увеличен интервал для кнопки
   }
 }
 
@@ -196,12 +216,12 @@ void setup() {
     server.begin();
   }
 
-  xTaskCreate(TaskWiFiReconnect, "WiFi Reconnect", 2048, NULL, 1, NULL);
-  xTaskCreate(TaskMQTTReconnect, "MQTT Reconnect", 2048, NULL, 1, NULL);
-  xTaskCreate(TaskEncoder, "Encoder", 2048, NULL, 1, NULL);
-  xTaskCreate(TaskWebServer, "Web Server", 2048, NULL, 1, NULL);
-  xTaskCreate(TaskLED, "LED Control", 2048, NULL, 1, NULL);
-  xTaskCreate(TaskButton, "Button Control", 2048, NULL, 1, NULL);
+  xTaskCreate(TaskWiFiReconnect, "WiFi Reconnect", 2048, NULL, 1, NULL);  // Низкий приоритет
+  xTaskCreate(TaskMQTTReconnect, "MQTT Reconnect", 2048, NULL, 2, NULL);  // Средний приоритет
+  xTaskCreate(TaskEncoder, "Encoder", 2048, NULL, 3, NULL);               // Высокий приоритет
+  xTaskCreate(TaskWebServer, "Web Server", 2048, NULL, 1, NULL);          // Низкий приоритет
+  xTaskCreate(TaskLED, "LED Control", 2048, NULL, 0, NULL);               // Самый низкий приоритет
+  xTaskCreate(TaskButton, "Button Control", 2048, NULL, 2, NULL);         // Средний приоритет
 }
 
 void loop() {
